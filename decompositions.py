@@ -11,7 +11,12 @@ def cp_decomposition_conv_layer(layer, rank):
 
     # Perform CP decomposition on the layer weight tensorly. 
     last, first, vertical, horizontal = \
-        parafac(layer.weight.data, rank=rank, init='svd')
+        parafac(layer.weight.data.numpy(), rank=rank, init='svd')
+
+    last = torch.from_numpy(last.copy())
+    first = torch.from_numpy(first.copy())
+    vertical = torch.from_numpy(vertical.copy())
+    horizontal = torch.from_numpy(horizontal.copy())
 
     pointwise_s_to_r_layer = torch.nn.Conv2d(in_channels=first.shape[0], \
             out_channels=first.shape[1], kernel_size=1, stride=1, padding=0, 
@@ -53,7 +58,7 @@ def estimate_ranks(layer):
     be performed on, and estimates the ranks of the matrices using VBMF 
     """
 
-    weights = layer.weight.data
+    weights = layer.weight.data.numpy()
     unfold_0 = tl.base.unfold(weights, 0) 
     unfold_1 = tl.base.unfold(weights, 1)
     _, diag_0, _, _ = VBMF.EVBMF(unfold_0)
@@ -61,18 +66,27 @@ def estimate_ranks(layer):
     ranks = [diag_0.shape[0], diag_1.shape[1]]
     return ranks
 
-def tucker_decomposition_conv_layer(layer):
+def tucker_decomposition_conv_layer(layer, ranks):
     """ Gets a conv layer, 
         returns a nn.Sequential object with the Tucker decomposition.
         The ranks are estimated with a Python implementation of VBMF
         https://github.com/CasvandenBogaard/VBMF
     """
 
-    ranks = estimate_ranks(layer)
-    print(layer, "VBMF Estimated ranks", ranks)
+    # ranks = estimate_ranks(layer)
+    # print(layer, "VBMF Estimated ranks", ranks)
+    if ranks is None:
+        ranks = estimate_ranks(layer)
+        print(layer, "VBMF Estimated ranks", ranks)
     core, [last, first] = \
-        partial_tucker(layer.weight.data, \
+        partial_tucker(layer.weight.data.numpy(), \
             modes=[0, 1], ranks=ranks, init='svd')
+
+    # last = torch.FloatTensor(last)
+    # first = torch.FloatTensor(first)
+    last = torch.from_numpy(last.copy())
+    first = torch.from_numpy(first.copy())
+    core = torch.from_numpy(core.copy())
 
     # A pointwise convolution that reduces the channels from S to R3
     first_layer = torch.nn.Conv2d(in_channels=first.shape[0], \
@@ -100,3 +114,22 @@ def tucker_decomposition_conv_layer(layer):
 
     new_layers = [first_layer, core_layer, last_layer]
     return nn.Sequential(*new_layers)
+
+
+
+
+
+if __name__ == '__main__':
+
+    net = torch.load("./checkpoint/CIFARNet.p").cuda()
+    tucker_net = torch.load('./checkpoint/decomposed_CIFARNet.p').cuda()
+    cp_net = torch.load("./checkpoint/cp_CIFARNet.p").cuda()
+
+    # inputs = torch.rand([1, 3, 32, 32]).cuda()
+    #
+    # out = net(inputs)
+    # out_cp = cp_net(inputs)
+    # # out_de = tucker_net(inputs)
+    #
+    # print(out)
+    # print(out_cp)

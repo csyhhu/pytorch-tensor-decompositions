@@ -16,37 +16,17 @@ import tensorly
 from itertools import chain
 from decompositions import cp_decomposition_conv_layer, tucker_decomposition_conv_layer
 from torchvision.models import vgg16_bn
-from CIFARNet import CIFARNet
-
-# VGG16 based network for classifying between dogs and cats.
-# After training this will be an over parameterized network,
-# with potential to shrink it.
-class ModifiedVGG16Model(torch.nn.Module):
-    def __init__(self, model=None):
-        super(ModifiedVGG16Model, self).__init__()
-
-        model = models.vgg16(pretrained=False)
-        self.features = model.features
-
-        self.classifier = nn.Sequential(
-            nn.Dropout(),
-            nn.Linear(25088, 4096),
-            nn.ReLU(inplace=True),
-            nn.Dropout(),
-            nn.Linear(4096, 4096),
-            nn.ReLU(inplace=True),
-            nn.Linear(4096, 2))
-
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier(x)
-        return x
+from models_CIFAR10.CIFARNet import CIFARNet
+from utils.dataset import get_dataloader
+from utils.miscellaneous import progress_bar
 
 class Trainer:
     def __init__(self, train_path, test_path, model, optimizer):
-        self.train_data_loader = dataset.loader(train_path)
-        self.test_data_loader = dataset.test_loader(test_path)
+        # self.train_data_loader = dataset.loader(train_path)
+        # self.test_data_loader = dataset.test_loader(test_path)
+
+        self.train_data_loader = get_dataloader('CIFAR10', "train", 128)
+        self.test_data_loader = get_dataloader('CIFAR10', "test", 128)
 
         self.optimizer = optimizer
 
@@ -76,12 +56,35 @@ class Trainer:
         self.model.train()
 
     def train(self, epoches=10):
-        for i in range(epoches):
-            print("Epoch: ", i)
-            self.train_epoch()
+        # for i in range(epoches):
+        #     print("Epoch: ", i)
+        #     self.train_epoch()
+        #     self.test()
+        # print("Finished fine tuning.")
+        for epoch in range(epoches):
+            total = 0
+            correct = 0
+            loss = 0
+            print('\nEpoch: %d' %epoch)
+            for batch_idx, (inputs, targets) in enumerate(self.train_data_loader):
+
+                inputs, targets = inputs.cuda(), targets.cuda()
+                outputs = self.model(inputs)
+                losses = nn.CrossEntropyLoss()(outputs, targets)
+
+                self.optimizer.zero_grad()
+                losses.backward()
+                loss += losses.item()
+                self.optimizer.step()
+
+                _, predicted = torch.max(outputs.data, 1)
+                total += targets.size(0)
+                correct += predicted.eq(targets.data).cpu().sum().item()
+
+                progress_bar(batch_idx, len(self.train_data_loader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
+                         % (loss / (batch_idx + 1),
+                            100. * float(correct) / float(total), correct, total))
             self.test()
-        print("Finished fine tuning.")
-        
 
     def train_batch(self, batch, label):
         self.model.zero_grad()
@@ -103,7 +106,7 @@ def get_args():
     parser.add_argument("--cp", dest="cp", action="store_true", \
         help="Use cp decomposition. uses tucker by default")
     parser.set_defaults(train=False)
-    parser.set_defaults(decompose=True)
+    parser.set_defaults(decompose=False)
     parser.set_defaults(fine_tune=False)
     parser.set_defaults(cp=False)    
     args = parser.parse_args()
@@ -114,20 +117,22 @@ if __name__ == '__main__':
     tl.set_backend('pytorch')
 
     if args.train:
-        model = ModifiedVGG16Model().cuda()
-        optimizer = optim.SGD(model.classifier.parameters(), lr=0.0001, momentum=0.99)
+        # model = ModifiedVGG16Model().cuda()
+        model = CIFARNet().cuda()
+        # optimizer = optim.Adam(model.classifier.parameters(), lr=1e-3)
+        optimizer = optim.Adam(model.parameters(), lr=1e-3)
         trainer = Trainer(args.train_path, args.test_path, model, optimizer)
 
         trainer.train(epoches = 10)
-        torch.save(model, "model")
+        torch.save(model, "./checkpoint/CIFARNet.p")
 
     elif args.decompose:
         # model = torch.load("./vgg16_bn-6c64b313.pth").cuda()
         # model = ModifiedVGG16Model().cuda()
         # model = vgg16_bn()
         # model.load_state_dict(torch.load("./vgg16_bn-6c64b313.pth"))
-        model = CIFARNet()
-        model.load_state_dict(torch.load("./CIFARNet.pth"))
+        model = torch.load('./checkpoint/CIFARNet.p')
+        # model.load_state_dict(torch.load("./CIFARNet.pth"))
         model.eval()
         model.cpu()
         N = len(model.features._modules.keys())
@@ -145,12 +150,13 @@ if __name__ == '__main__':
 
                 model.features._modules[key] = decomposed
 
-        torch.save(model, './decomposed_CIFAR10.p')
+        torch.save(model, './checkpoint/cp_CIFARNet.p')
 
 
     elif args.fine_tune:
-        base_model = torch.load("./decomposed_CIFAR10.p")
-        model = torch.nn.DataParallel(base_model)
+        # base_model = torch.load("./checkpoint/decomposed_CIFAR10.p")
+        # model = torch.nn.DataParallel(base_model)
+        model = torch.load("./checkpoint/cp_CIFARNet.p")
 
         for param in model.parameters():
             param.requires_grad = True
@@ -159,11 +165,13 @@ if __name__ == '__main__':
         model.cuda()        
 
         if args.cp:
-            optimizer = optim.SGD(model.parameters(), lr=0.000001)
+            # optimizer = optim.SGD(model.parameters(), lr=0.000001)
+            optimizer = optim.Adam(model.parameters(), lr=1e-3)
         else:
             # optimizer = optim.SGD(chain(model.features.parameters(), \
             #     model.classifier.parameters()), lr=0.01)
-            optimizer = optim.SGD(model.parameters(), lr=0.001)
+            # optimizer = optim.SGD(model.parameters(), lr=0.001)
+            optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 
         trainer = Trainer(args.train_path, args.test_path, model, optimizer)
@@ -171,6 +179,6 @@ if __name__ == '__main__':
         trainer.test()
         model.cuda()
         model.train()
-        trainer.train(epoches=100)
+        trainer.train(epoches=10)
         model.eval()
         trainer.test()
